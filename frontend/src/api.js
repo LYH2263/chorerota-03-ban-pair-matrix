@@ -5,8 +5,14 @@ export async function api(path, opts = {}) {
   })
   if (!r.ok) {
     let detail = r.statusText
-    try { const j = await r.json(); detail = j.detail || JSON.stringify(j) } catch {}
-    throw new Error(typeof detail === 'string' ? detail : JSON.stringify(detail))
+    let body = null
+    try { body = await r.json(); detail = body.detail || JSON.stringify(body) } catch {}
+    const msg = typeof detail === 'string' ? detail : (detail.reason || JSON.stringify(detail))
+    const err = new Error(msg)
+    err.status = r.status
+    err.detail = typeof detail === 'object' ? detail : null  // 结构化回包（如 unassignable_slot）
+    err.body = body
+    throw err
   }
   if (r.status === 204) return null
   return r.json()

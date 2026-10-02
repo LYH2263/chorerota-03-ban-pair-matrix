@@ -4,7 +4,9 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from app import seed
 from app.db import connect
-from app.engines.rota import build_week_slots, swap_legal, apply_swap
+from app.engines.rota import swap_legal, apply_swap
+from app.modules import member_task_ban as bans
+from app.modules.week_generation import generate_week, GenerationBlocked
 
 app = FastAPI(title="Chorerota", version="0.1.0")
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
@@ -49,11 +51,50 @@ def week_board(week_id: int):
     assigns = [dict(r) for r in c.execute("SELECT * FROM assignments WHERE week_id=?", (week_id,))]
     members = {r["id"]: r["name"] for r in c.execute("SELECT id,name FROM members")}
     tasks = {r["id"]: r["title"] for r in c.execute("SELECT id,title FROM tasks")}
+    snapshot = bans.list_snapshot(c, week_id)
     c.close()
     for a in assigns:
         a["member_name"] = members.get(a["member_id"], "?")
         a["task_title"] = tasks.get(a["task_id"], "?")
-    return {"week": dict(week), "assignments": assigns}
+    return {"week": dict(week), "assignments": assigns, "ban_snapshot": snapshot}
+
+@app.get("/api/bans")
+def list_bans():
+    c = connect(); rows = bans.list_bans(c); c.close(); return rows
+
+class BanBody(BaseModel):
+    member_id: int
+    task_id: int
+
+@app.post("/api/bans")
+def add_ban(body: BanBody):
+    # 只改现行矩阵；任何旧周格位与已钉快照都不受影响。
+    c = connect()
+    try:
+        bid = bans.add_ban(c, body.member_id, body.task_id)
+        c.commit()
+    except ValueError as e:
+        c.rollback(); c.close(); raise HTTPException(400, str(e))
+    c.close()
+    return {"id": bid}
+
+@app.delete("/api/bans/{ban_id}")
+def delete_ban(ban_id: int):
+    c = connect()
+    removed = bans.remove_ban(c, ban_id)
+    c.commit(); c.close()
+    if not removed: raise HTTPException(404, "ban not found")
+    return {"ok": True}
+
+@app.get("/api/weeks/{week_id}/bans")
+def week_bans(week_id: int):
+    """按周回看当周钉住的禁配快照（三路同钉的快照一路）。"""
+    c = connect()
+    if not c.execute("SELECT 1 FROM weeks WHERE id=?", (week_id,)).fetchone():
+        c.close(); raise HTTPException(404, "week not found")
+    snap = bans.list_snapshot(c, week_id)
+    c.close()
+    return snap
 
 class GenBody(BaseModel):
     days: int = 7
@@ -61,18 +102,21 @@ class GenBody(BaseModel):
 @app.post("/api/weeks/{week_id}/generate")
 def generate(week_id: int, body: GenBody = GenBody()):
     c = connect()
-    week = c.execute("SELECT * FROM weeks WHERE id=?", (week_id,)).fetchone()
-    if not week: c.close(); raise HTTPException(404, "week not found")
-    mids = [r["id"] for r in c.execute("SELECT id FROM members WHERE active=1 AND data_quality='clean' ORDER BY id")]
-    tids = [r["id"] for r in c.execute("SELECT id FROM tasks WHERE data_quality='clean' AND weight>0 ORDER BY id")]
-    slots = build_week_slots(mids, tids, days=body.days)
-    c.execute("DELETE FROM assignments WHERE week_id=?", (week_id,))
-    for s in slots:
-        c.execute("INSERT INTO assignments(week_id,day,task_id,member_id) VALUES (?,?,?,?)",
-                  (week_id, s["day"], s["task_id"], s["member_id"]))
-    c.execute("UPDATE weeks SET status='ready' WHERE id=?", (week_id,))
-    c.commit(); c.close()
-    return {"count": len(slots), "slots": slots}
+    try:
+        result = generate_week(c, week_id, days=body.days)
+        c.commit()
+    except LookupError:
+        c.close(); raise HTTPException(404, "week not found")
+    except GenerationBlocked as e:
+        # 整次生成失败：事务不提交，原表与原快照原样保留。
+        c.rollback(); c.close()
+        raise HTTPException(400, {
+            "reason": "unassignable_slot",
+            "day": e.day,
+            "task_id": e.task_id,
+        })
+    c.close()
+    return result
 
 class SwapBody(BaseModel):
     a_day: int; a_task: int; b_day: int; b_task: int; note: str = ""
@@ -81,7 +125,9 @@ class SwapBody(BaseModel):
 def request_swap(week_id: int, body: SwapBody):
     c = connect()
     assigns = [dict(r) for r in c.execute("SELECT day,task_id,member_id FROM assignments WHERE week_id=?", (week_id,))]
-    check = swap_legal(assigns, body.a_day, body.a_task, body.b_day, body.b_task)
+    # 当周钉版快照 ∪ 现行矩阵：生成后新增禁配同样挡对调。
+    check = swap_legal(assigns, body.a_day, body.a_task, body.b_day, body.b_task,
+                       banned_pairs=bans.effective_pairs(c, week_id))
     if not check["ok"]:
         c.close(); raise HTTPException(400, check["reason"])
     cur = c.execute(
@@ -105,8 +151,10 @@ def confirm_swap(swap_id: int):
         "SELECT id,day,task_id,member_id FROM assignments WHERE week_id=?", (sw["week_id"],))]
     slots = [{"day": a["day"], "task_id": a["task_id"], "member_id": a["member_id"]} for a in assigns]
     try:
-        new_slots = apply_swap(slots, sw["a_day"], sw["a_task"], sw["b_day"], sw["b_task"])
+        new_slots = apply_swap(slots, sw["a_day"], sw["a_task"], sw["b_day"], sw["b_task"],
+                               banned_pairs=bans.effective_pairs(c, sw["week_id"]))
     except ValueError as e:
+        # ban_conflict 等：失败且格表不动。
         c.close(); raise HTTPException(400, str(e))
     for a, s in zip(assigns, new_slots):
         c.execute("UPDATE assignments SET member_id=? WHERE id=?", (s["member_id"], a["id"]))
