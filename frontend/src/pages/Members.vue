@@ -11,11 +11,13 @@
         <span class="muted"> · {{ m.active ? '在岗' : '停用' }} · {{ m.data_quality }}</span>
       </li>
     </ul>
+    <Exclusions />
   </div>
 </template>
 <script setup>
 import { ref, onMounted } from 'vue'
 import { api } from '../api'
+import Exclusions from '../components/Exclusions.vue'
 const rows = ref([])
 const name = ref('')
 async function load() { rows.value = await api('/members') }

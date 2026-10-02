@@ -9,6 +9,17 @@ def init_db():
     CREATE TABLE IF NOT EXISTS assignments(id INTEGER PRIMARY KEY AUTOINCREMENT, week_id INT, day INT, task_id INT, member_id INT);
     CREATE TABLE IF NOT EXISTS swap_requests(id INTEGER PRIMARY KEY AUTOINCREMENT, week_id INT, a_day INT, a_task INT, b_day INT, b_task INT, status TEXT, note TEXT);
     CREATE TABLE IF NOT EXISTS settings(key TEXT PRIMARY KEY, value TEXT);
+    CREATE TABLE IF NOT EXISTS exclusions(
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        member_id INT NOT NULL, task_id INT NOT NULL,
+        UNIQUE(member_id, task_id));
+    CREATE TABLE IF NOT EXISTS week_exclusions(
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        week_id INT NOT NULL, member_id INT NOT NULL, task_id INT NOT NULL,
+        UNIQUE(week_id, member_id, task_id));
+    CREATE TABLE IF NOT EXISTS assignment_gaps(
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        week_id INT NOT NULL, day INT NOT NULL, task_id INT NOT NULL, reason TEXT NOT NULL);
     """)
     if c.execute("SELECT COUNT(*) c FROM members").fetchone()["c"] == 0:
         c.executemany("INSERT INTO members(name,active,data_quality) VALUES (?,?,?)", [

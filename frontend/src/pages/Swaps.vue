@@ -21,7 +21,7 @@
 </template>
 <script setup>
 import { ref, onMounted } from 'vue'
-import { api } from '../api'
+import { api, reasonText } from '../api'
 const rows = ref([])
 const err = ref('')
 const form = ref({ a_day: 0, a_task: 1, b_day: 1, b_task: 1 })
@@ -31,12 +31,12 @@ async function request() {
   try {
     await api('/weeks/1/swaps', { method: 'POST', body: JSON.stringify(form.value) })
     await load()
-  } catch (e) { err.value = e.message }
+  } catch (e) { err.value = reasonText(e.message) }
 }
 async function confirm(id) {
   err.value = ''
   try { await api('/swaps/' + id + '/confirm', { method: 'POST', body: '{}' }); await load() }
-  catch (e) { err.value = e.message }
+  catch (e) { err.value = reasonText(e.message) }
 }
 onMounted(load)
 </script>

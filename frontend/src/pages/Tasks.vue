@@ -11,11 +11,13 @@
         <span class="muted"> · 权重 {{ t.weight }} · {{ t.data_quality }}</span>
       </li>
     </ul>
+    <Exclusions />
   </div>
 </template>
 <script setup>
 import { ref, onMounted } from 'vue'
 import { api } from '../api'
+import Exclusions from '../components/Exclusions.vue'
 const rows = ref([])
 const title = ref('')
 async function load() { rows.value = await api('/tasks') }
